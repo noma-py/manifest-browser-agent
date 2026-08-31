@@ -26,7 +26,6 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # deepseek-v4-flash is a reasoning model — ~2.5k tokens/turn go to hidden
 # reasoning, so the budget must leave generous room for that plus the JSON answer.
 MAX_DECISION_TOKENS = 8_000
-RATE_LIMIT_BACKOFF_S = 20  # 429 is transient — wait it out, then abort if still limited
 
 _CLICK_TYPES = {"click", "submit", "button", "link", "check", "radio", "toggle"}
 _FILL_TYPES = {"fill", "text", "input", "textarea", "email", "password",
@@ -101,14 +100,13 @@ class AgentLoop:
         started, t0 = _iso(), time.monotonic()
         try:
             m = self.manifest.get(url)
-        except RateLimitError:
-            # the one failure where retry is the correct response, not "arbitrary retry"
-            print(f"[manifest] rate limited — waiting {RATE_LIMIT_BACKOFF_S}s")
-            time.sleep(RATE_LIMIT_BACKOFF_S)
-            try:
-                m = self.manifest.get(url)
-            except Exception as e:  # noqa: BLE001
-                raise ManifestUnavailableError(f"Manifest call failed for {url}: {e}") from e
+        except RateLimitError as e:
+            # Manifest's 429 covers both a per-minute burst and a hard plan quota
+            # ("Monthly manifest limit reached"). Neither is worth retrying here.
+            raise ManifestUnavailableError(
+                f"Manifest rate limit hit for {url}: {e} "
+                "(check your plan's monthly manifest quota)"
+            ) from e
         except Exception as e:  # noqa: BLE001 - any other failure is "Manifest unavailable"
             raise ManifestUnavailableError(f"Manifest call failed for {url}: {e}") from e
         return m, CallTiming(started, (time.monotonic() - t0) * 1000)

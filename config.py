@@ -18,7 +18,20 @@ class Config:
     model: str = "claude-sonnet-4-6"
 
 
+def _load_dotenv(path: str = ".env") -> None:
+    """Populate os.environ from a .env file. Real env vars always win."""
+    if not os.path.isfile(path):
+        return
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+
 def load(storage_state: str | None = None) -> Config:
+    _load_dotenv()
     missing = [k for k in ("MANIFEST_API_KEY", "ANTHROPIC_API_KEY") if not os.environ.get(k)]
     if missing:
         raise ConfigError(

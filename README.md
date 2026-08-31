@@ -16,9 +16,11 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 
-export MANIFEST_API_KEY=...
-export ANTHROPIC_API_KEY=...
+cp .env.example .env   # then fill in the two keys
 ```
+
+`config.py` loads `.env` automatically; real environment variables override it.
+`.env` is gitignored.
 
 Auth is via a pre-captured logged-in session, not solved by the agent. Capture one once:
 

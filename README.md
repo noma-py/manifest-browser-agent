@@ -61,9 +61,15 @@ swallowed or blindly retried.
 
 ## Known limitation
 
-Manifest perceives the page by URL (server-side fetch), so client-side state your Playwright
-session built up (a half-filled form, an opened modal) isn't visible to it. Flows that depend
-on such state between steps may not perceive correctly. Out of scope for this pass.
+Manifest perceives the page by URL with its own server-side fetch, using its own session —
+not our Playwright session. So on a page that requires auth, Manifest sees the logged-out
+version even after our agent has logged in. In the `saucedemo` run below, step 3 is already
+on `/inventory.html` but Manifest still reports the three login actions. The agent coped
+(it judged the goal complete from the URL change), but goals that need Manifest to perceive
+authenticated pages accurately require a Manifest-side session, which is out of scope here.
+
+`deepseek-v4-flash` is a reasoning model — it spends ~2.5k hidden tokens per decision, so
+`MAX_DECISION_TOKENS` is set to 8k in `loop.py`. Decisions take ~1.5–2.5s each.
 
 ## Tests
 

@@ -23,6 +23,13 @@ from trajectory import CallTiming, StepRecord, Trajectory
 NETWORK_IDLE_TIMEOUT_MS = 8_000
 ACTION_TIMEOUT_MS = 8_000
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# deepseek-v4-flash is a reasoning model — ~2.5k tokens/turn go to hidden
+# reasoning, so the budget must leave generous room for that plus the JSON answer.
+MAX_DECISION_TOKENS = 8_000
+
+_CLICK_TYPES = {"click", "submit", "button", "link", "check", "radio", "toggle"}
+_FILL_TYPES = {"fill", "text", "input", "textarea", "email", "password",
+               "search", "tel", "url", "number"}
 
 _SYSTEM = """You drive a headless browser to accomplish a goal. Each turn you get:
 - the goal
@@ -53,6 +60,15 @@ def _strip_fences(text: str) -> str:
         if t.rstrip().endswith("```"):
             t = t.rstrip()[:-3]
     return t.strip()
+
+
+def _action_kind(action_type: str, has_value: bool) -> str | None:
+    """Collapse Manifest's HTML-ish action types to 'fill' / 'click' / None (unhandled)."""
+    if action_type in _FILL_TYPES or (action_type not in _CLICK_TYPES and has_value):
+        return "fill"
+    if action_type in _CLICK_TYPES:
+        return "click"
+    return None
 
 
 def _action_view(a: Action, completed: set[str]) -> dict:
@@ -94,7 +110,7 @@ class AgentLoop:
         started, t0 = _iso(), time.monotonic()
         resp = self.llm.chat.completions.create(
             model=self.cfg.model,
-            max_tokens=600,
+            max_tokens=MAX_DECISION_TOKENS,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": _SYSTEM},
@@ -102,7 +118,10 @@ class AgentLoop:
             ],
         )
         timing = CallTiming(started, (time.monotonic() - t0) * 1000)
-        raw = resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        raw = (choice.message.content or "").strip()
+        if not raw:
+            raise ValueError(f"empty decision response (finish_reason={choice.finish_reason})")
         return json.loads(_strip_fences(raw)), timing
 
     # -- action ------------------------------------------------------
@@ -118,16 +137,17 @@ class AgentLoop:
 
     def _execute(self, page, action: Action, value: str | None) -> str:
         target = self._locator(page, action)
+        kind = _action_kind(action.type, value is not None)
+        if kind is None:
+            raise ActionExecutionError(
+                action.id, action.locator, f"unhandled action type {action.type!r}"
+            )
         try:
-            if action.type == "fill":
+            if kind == "fill":
                 target.fill(value or "", timeout=ACTION_TIMEOUT_MS)
                 return f"filled {action.label!r} with {value!r}"
-            if action.type in ("click", "submit"):
-                target.click(timeout=ACTION_TIMEOUT_MS)
-                return f"{action.type} {action.label!r}"
-            raise ActionExecutionError(
-                action.id, action.locator, f"unknown action type {action.type!r}"
-            )
+            target.click(timeout=ACTION_TIMEOUT_MS)
+            return f"clicked {action.label!r}"
         except ActionExecutionError:
             raise
         except Exception as e:  # noqa: BLE001 - wrap the underlying Playwright failure
@@ -182,7 +202,7 @@ class AgentLoop:
                     actions_view = [_action_view(a, completed) for a in manifest.actions]
                     try:
                         decision, rec.decision_call = self._decide(goal, actions_view, traj)
-                    except (json.JSONDecodeError, openai.APIError) as e:
+                    except (ValueError, openai.APIError) as e:  # bad/empty JSON, API failure
                         rec.error = f"decision step failed: {e}"
                         traj.add(rec)
                         traj.finalize("error", rec.error)

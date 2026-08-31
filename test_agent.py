@@ -5,7 +5,7 @@ The perceive/decide/act loop itself is covered by the acceptance-criteria live r
 
 from manifest_api import Action, Locator
 
-from loop import _action_view, _strip_fences
+from loop import _action_kind, _action_view, _strip_fences
 from trajectory import CallTiming, StepRecord, Trajectory
 
 
@@ -25,6 +25,15 @@ def test_action_view_requires_graph():
 
     v2 = _action_view(a, completed={"cart_filled", "shipping_confirmed"})
     assert v2["blocked"] is False
+
+
+def test_action_kind():
+    assert _action_kind("text", has_value=True) == "fill"
+    assert _action_kind("password", has_value=False) == "fill"
+    assert _action_kind("submit", has_value=False) == "click"
+    assert _action_kind("link", has_value=False) == "click"
+    assert _action_kind("weird-unknown", has_value=True) == "fill"   # value => treat as fill
+    assert _action_kind("weird-unknown", has_value=False) is None    # give up, surfaces an error
 
 
 def test_trajectory_export():

@@ -13,9 +13,9 @@ class ConfigError(RuntimeError):
 @dataclass
 class Config:
     manifest_api_key: str
-    anthropic_api_key: str
+    deepseek_api_key: str
     storage_state: str | None  # path, or None if not present
-    model: str = "claude-sonnet-4-6"
+    model: str = "deepseek-v4-flash"
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -32,7 +32,7 @@ def _load_dotenv(path: str = ".env") -> None:
 
 def load(storage_state: str | None = None) -> Config:
     _load_dotenv()
-    missing = [k for k in ("MANIFEST_API_KEY", "ANTHROPIC_API_KEY") if not os.environ.get(k)]
+    missing = [k for k in ("MANIFEST_API_KEY", "DEEPSEEK_API_KEY") if not os.environ.get(k)]
     if missing:
         raise ConfigError(
             f"Missing required env var(s): {', '.join(missing)}. "
@@ -46,7 +46,7 @@ def load(storage_state: str | None = None) -> Config:
 
     return Config(
         manifest_api_key=os.environ["MANIFEST_API_KEY"],
-        anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+        deepseek_api_key=os.environ["DEEPSEEK_API_KEY"],
         storage_state=path,
-        model=os.environ.get("AGENT_MODEL", "claude-sonnet-4-6"),
+        model=os.environ.get("AGENT_MODEL", "deepseek-v4-flash"),
     )

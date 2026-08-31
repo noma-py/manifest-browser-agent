@@ -34,7 +34,7 @@ def test_trajectory_export():
         actions_available=[{"id": "go", "label": "Checkout", "type": "click"}],
         decision={"action_id": "go", "reasoning": "advance to checkout", "done": False},
         executed="click 'Checkout'", url_after="https://x/checkout",
-        manifest_call=CallTiming("t", 321.0), sonnet_call=CallTiming("t", 1200.0),
+        manifest_call=CallTiming("t", 321.0), decision_call=CallTiming("t", 1200.0),
     ))
     t.finalize("complete")
 

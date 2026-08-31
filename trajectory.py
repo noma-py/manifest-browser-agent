@@ -28,7 +28,7 @@ class StepRecord:
     error: str | None = None               # error string if perception/execution failed
     url_after: str | None = None
     manifest_call: CallTiming | None = None
-    sonnet_call: CallTiming | None = None
+    decision_call: CallTiming | None = None
     timestamp: str = field(default_factory=_now)
 
 
@@ -100,8 +100,8 @@ class Trajectory:
                         f"The model chose **`{d.get('action_id')}`**{val} — "
                         f"\"{d.get('reasoning')}\". "
                     )
-                if s.sonnet_call:
-                    para += f"(Decision call: {s.sonnet_call.latency_ms:.0f} ms.) "
+                if s.decision_call:
+                    para += f"(Decision call: {s.decision_call.latency_ms:.0f} ms.) "
             if s.error:
                 para += f"**Failure:** {s.error} "
             elif s.executed:

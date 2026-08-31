@@ -4,7 +4,7 @@ A local, headless-browser agent that uses the [Manifest API](https://manifest.om
 as its perception layer. Given a goal and a start URL it loops:
 
 1. **Perceive** — ask Manifest what actions exist on the current page (with a `requires` graph)
-2. **Decide** — ask Sonnet which action advances the goal, using that graph
+2. **Decide** — ask DeepSeek (`deepseek-v4-flash`, OpenAI-compatible API) which action advances the goal, using that graph
 3. **Act** — execute the action via Playwright, observe the new URL, repeat
 
 Output is a CLI run plus a trajectory log (JSON + a case-study Markdown writeup). Not a product.
@@ -54,7 +54,7 @@ Trajectories land in `runs/<timestamp>.{json,md}` (gitignored). The final summar
 
 ## Failure visibility
 
-Every step records the Manifest and Sonnet call latency separately, the actions offered,
+Every step records the Manifest and DeepSeek call latency separately, the actions offered,
 the model's decision + one-line reasoning, and the exact error if perception or execution
 failed. Errors are typed (`errors.py`) and fed back into the next decision rather than
 swallowed or blindly retried.

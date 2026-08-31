@@ -1,4 +1,4 @@
-"""Perceive (Manifest) -> decide (Sonnet) -> act (Playwright), until done or stuck."""
+"""Perceive (Manifest) -> decide (DeepSeek) -> act (Playwright), until done or stuck."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import time
 from datetime import datetime, timezone
 
-import anthropic
+import openai
 from manifest_api import Action, Manifest, ManifestClient
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
@@ -22,6 +22,7 @@ from trajectory import CallTiming, StepRecord, Trajectory
 
 NETWORK_IDLE_TIMEOUT_MS = 8_000
 ACTION_TIMEOUT_MS = 8_000
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 _SYSTEM = """You drive a headless browser to accomplish a goal. Each turn you get:
 - the goal
@@ -73,7 +74,7 @@ class AgentLoop:
         self.cfg = config
         self.max_steps = max_steps
         self.manifest = ManifestClient(api_key=config.manifest_api_key)
-        self.llm = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        self.llm = openai.OpenAI(api_key=config.deepseek_api_key, base_url=DEEPSEEK_BASE_URL)
 
     # -- perception -----------------------------------------------------
     # ponytail: Manifest perceives by URL (server-side fetch), so client-side state
@@ -91,14 +92,17 @@ class AgentLoop:
     def _decide(self, goal: str, actions: list[dict], traj: Trajectory) -> tuple[dict, CallTiming]:
         payload = {"goal": goal, "actions": actions, "recent_steps": traj.recent_summary(5)}
         started, t0 = _iso(), time.monotonic()
-        resp = self.llm.messages.create(
+        resp = self.llm.chat.completions.create(
             model=self.cfg.model,
             max_tokens=600,
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": json.dumps(payload, indent=2)}],
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": json.dumps(payload, indent=2)},
+            ],
         )
         timing = CallTiming(started, (time.monotonic() - t0) * 1000)
-        raw = "".join(b.text for b in resp.content if b.type == "text")
+        raw = resp.choices[0].message.content or ""
         return json.loads(_strip_fences(raw)), timing
 
     # -- action ------------------------------------------------------
@@ -177,8 +181,8 @@ class AgentLoop:
 
                     actions_view = [_action_view(a, completed) for a in manifest.actions]
                     try:
-                        decision, rec.sonnet_call = self._decide(goal, actions_view, traj)
-                    except (json.JSONDecodeError, anthropic.APIError) as e:
+                        decision, rec.decision_call = self._decide(goal, actions_view, traj)
+                    except (json.JSONDecodeError, openai.APIError) as e:
                         rec.error = f"decision step failed: {e}"
                         traj.add(rec)
                         traj.finalize("error", rec.error)

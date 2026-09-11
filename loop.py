@@ -206,6 +206,10 @@ class AgentLoop:
             context = browser.new_context(**ctx_kw)
             page = context.new_page()
             page.goto(start_url, wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS)
+            except PlaywrightError:
+                pass  # same best-effort settle used after every action below
 
             try:
                 for step in range(self.max_steps):

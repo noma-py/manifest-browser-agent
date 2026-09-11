@@ -25,13 +25,18 @@ ACTION_TIMEOUT_MS = 8_000
 # authenticated SPA fetches (GA4) measured ~59s server-side; SDK default is 30s.
 MANIFEST_TIMEOUT_S = 90.0
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-# deepseek-v4-flash is a reasoning model — ~2.5k tokens/turn go to hidden
-# reasoning, so the budget must leave generous room for that plus the JSON answer.
-MAX_DECISION_TOKENS = 8_000
+# deepseek-v4-flash is a reasoning model — hidden reasoning scales with how much
+# there is to reason about. ~2.5k tokens/turn on a small action list (saucedemo),
+# but a real GA4 page with 50+ actions blew the 8k budget (finish_reason=length,
+# empty content) by step 6. 24k leaves headroom for that; if a page with even
+# more actions still exhausts it, the fix is trimming the actions payload, not
+# raising this forever.
+MAX_DECISION_TOKENS = 24_000
 
 _CLICK_TYPES = {"click", "submit", "button", "link", "check", "radio", "toggle"}
 _FILL_TYPES = {"fill", "text", "input", "textarea", "email", "password",
                "search", "tel", "url", "number"}
+_SELECT_TYPES = {"select"}
 
 _SYSTEM = """You drive a headless browser to accomplish a goal. Each turn you get:
 - the goal
@@ -46,7 +51,7 @@ or produced no change - try a different one.
 
 Reply with JSON only, no prose, no code fences:
 {"action_id": "<id from the list, or null if done>",
- "value": "<text to type, only for fill actions, else omit>",
+ "value": "<text to type for fill actions, or the option label to pick for select actions, else omit>",
  "reasoning": "<one sentence, referencing the requires graph when relevant>",
  "done": <true if the goal is already satisfied, else false>}"""
 
@@ -65,7 +70,9 @@ def _strip_fences(text: str) -> str:
 
 
 def _action_kind(action_type: str, has_value: bool) -> str | None:
-    """Collapse Manifest's HTML-ish action types to 'fill' / 'click' / None (unhandled)."""
+    """Collapse Manifest's HTML-ish action types to 'fill' / 'select' / 'click' / None."""
+    if action_type in _SELECT_TYPES:
+        return "select"
     if action_type in _FILL_TYPES or (action_type not in _CLICK_TYPES and has_value):
         return "fill"
     if action_type in _CLICK_TYPES:
@@ -74,7 +81,10 @@ def _action_kind(action_type: str, has_value: bool) -> str | None:
 
 
 def _action_view(a: Action, completed: set[str]) -> dict:
-    req = set(a.requires)
+    # ponytail: SDK 0.4.0 nests requires as OR-groups (List[List[str]]); we flatten to a
+    # flat AND-set rather than modeling OR precisely. Revisit if a real page's requires
+    # actually has >1 group and the flattening produces a false "blocked".
+    req = {r for group in a.requires for r in (group if isinstance(group, list) else [group])}
     return {
         "id": a.id,
         "label": a.label,
@@ -145,6 +155,17 @@ class AgentLoop:
             return page.get_by_role(loc.role, name=loc.name)
         raise ActionExecutionError(action.id, loc, "locator has neither css nor role")
 
+    def _select(self, page, action: Action, target, value: str | None) -> None:
+        if not value:
+            raise ActionExecutionError(action.id, action.locator, "select action needs a value")
+        try:
+            target.select_option(label=value, timeout=ACTION_TIMEOUT_MS)
+            return
+        except PlaywrightError:
+            pass  # not a native <select> (e.g. an ARIA combobox like mat-select) - open + pick
+        target.click(timeout=ACTION_TIMEOUT_MS)
+        page.get_by_role("option", name=value).first.click(timeout=ACTION_TIMEOUT_MS)
+
     def _execute(self, page, action: Action, value: str | None) -> str:
         target = self._locator(page, action)
         kind = _action_kind(action.type, value is not None)
@@ -156,6 +177,9 @@ class AgentLoop:
             if kind == "fill":
                 target.fill(value or "", timeout=ACTION_TIMEOUT_MS)
                 return f"filled {action.label!r} with {value!r}"
+            if kind == "select":
+                self._select(page, action, target, value)
+                return f"selected {value!r} in {action.label!r}"
             target.click(timeout=ACTION_TIMEOUT_MS)
             return f"clicked {action.label!r}"
         except ActionExecutionError:

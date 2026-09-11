@@ -34,6 +34,7 @@ def test_action_kind():
     assert _action_kind("link", has_value=False) == "click"
     assert _action_kind("weird-unknown", has_value=True) == "fill"   # value => treat as fill
     assert _action_kind("weird-unknown", has_value=False) is None    # give up, surfaces an error
+    assert _action_kind("select", has_value=True) == "select"        # mat-select etc., not fill
 
 
 def test_trajectory_export():

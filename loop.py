@@ -22,6 +22,8 @@ from trajectory import CallTiming, StepRecord, Trajectory
 
 NETWORK_IDLE_TIMEOUT_MS = 8_000
 ACTION_TIMEOUT_MS = 8_000
+# authenticated SPA fetches (GA4) measured ~59s server-side; SDK default is 30s.
+MANIFEST_TIMEOUT_S = 90.0
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # deepseek-v4-flash is a reasoning model — ~2.5k tokens/turn go to hidden
 # reasoning, so the budget must leave generous room for that plus the JSON answer.
@@ -89,7 +91,7 @@ class AgentLoop:
     def __init__(self, config: Config, max_steps: int = 15):
         self.cfg = config
         self.max_steps = max_steps
-        self.manifest = ManifestClient(api_key=config.manifest_api_key)
+        self.manifest = ManifestClient(api_key=config.manifest_api_key, timeout=MANIFEST_TIMEOUT_S)
         self.llm = openai.OpenAI(api_key=config.deepseek_api_key, base_url=DEEPSEEK_BASE_URL)
 
     # -- perception -----------------------------------------------------
@@ -99,7 +101,7 @@ class AgentLoop:
     def _fetch_manifest(self, url: str) -> tuple[Manifest, CallTiming]:
         started, t0 = _iso(), time.monotonic()
         try:
-            m = self.manifest.get(url)
+            m = self.manifest.get(url, storage_state=self.cfg.storage_state)
         except RateLimitError as e:
             # Manifest's 429 covers both a per-minute burst and a hard plan quota
             # ("Monthly manifest limit reached"). Neither is worth retrying here.

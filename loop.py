@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 
 import openai
-from manifest_api import Action, Manifest, ManifestClient, RateLimitError
+from manifest_api import EXTRACTOR_JS, Action, Manifest, ManifestClient, RateLimitError
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
@@ -106,13 +106,18 @@ class AgentLoop:
         self.llm = openai.OpenAI(api_key=config.deepseek_api_key, base_url=DEEPSEEK_BASE_URL)
 
     # -- perception -----------------------------------------------------
-    # ponytail: Manifest perceives by URL (server-side fetch), so client-side state
-    # our Playwright page built up isn't visible to it. Fine for URL-routed flows;
-    # revisit with a DOM-snapshot upload path if state-dependent steps misperceive.
-    def _fetch_manifest(self, url: str) -> tuple[Manifest, CallTiming]:
+    # Perceive via the agent's own live page (from-dom), not a cold server-side
+    # re-navigation of the URL. That means auth and any client-side-only state
+    # (an open picker/overlay/modal that never touched the URL) are both visible,
+    # since we're reading the DOM our own browser is actually looking at right now.
+    def _fetch_manifest(self, page, url: str) -> tuple[Manifest, CallTiming]:
         started, t0 = _iso(), time.monotonic()
         try:
-            m = self.manifest.get(url, storage_state=self.cfg.storage_state)
+            page.evaluate(EXTRACTOR_JS)
+            dom_context = page.evaluate("window.__semanticAgentLayerExtractDomContext()")
+            # no cache_scope: a wizard/funnel's DOM changes every step, so caching
+            # would risk serving a stale overlay back on the next perceive.
+            m = self.manifest.get_from_dom(url, dom_context)
         except RateLimitError as e:
             # Manifest's 429 covers both a per-minute burst and a hard plan quota
             # ("Monthly manifest limit reached"). Neither is worth retrying here.
@@ -208,7 +213,7 @@ class AgentLoop:
                     rec = StepRecord(step=step, url_before=url_before, actions_available=[])
 
                     try:
-                        manifest, rec.manifest_call = self._fetch_manifest(url_before)
+                        manifest, rec.manifest_call = self._fetch_manifest(page, url_before)
                     except ManifestUnavailableError as e:
                         rec.error = str(e)
                         traj.add(rec)

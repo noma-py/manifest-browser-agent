@@ -61,15 +61,25 @@ swallowed or blindly retried.
 
 ## Known limitation
 
-Manifest perceives the page by URL with its own server-side fetch, using its own session —
-not our Playwright session. So on a page that requires auth, Manifest sees the logged-out
-version even after our agent has logged in: in a `saucedemo.com` login run, once the agent
-reaches `/inventory.html` Manifest still reports the three login actions. The agent can cope
-(it judged that goal complete from the URL change), but goals that need Manifest to perceive
-authenticated pages accurately require a Manifest-side session, which is out of scope here.
+Perception uses Manifest's `from-dom` endpoint: the agent extracts the current page's DOM
+context in its own live Playwright page (`EXTRACTOR_JS`, injected via `page.evaluate`) and
+posts that, rather than asking Manifest to re-navigate the URL itself. That means Manifest
+sees exactly what the agent's browser sees — the same authenticated session, and any
+client-side-only state (an open dropdown/modal/picker that never touched the URL). Earlier
+versions of this agent asked Manifest to fetch by URL with its own server-side session, which
+couldn't see auth or in-page overlay state at all; that's fixed now.
 
-`deepseek-v4-flash` is a reasoning model — it spends ~2.5k hidden tokens per decision, so
-`MAX_DECISION_TOKENS` is set to 8k in `loop.py`. Decisions take ~1.5–2.5s each.
+What's still a real wall: `from-dom` reflects a snapshot of what's on screen *right now* — it
+doesn't know how to get somewhere else. On a live run against a GA4 funnel-builder page, the
+agent successfully switched the exploration to "Funnel" mode, but opening the concept-picker
+overlay to search for a specific event needs a follow-up interaction the model doesn't have
+enough to reason about from a one-shot DOM snapshot alone (no visibility into what the overlay
+expects next). The stuck-detection catches this cleanly (repeat action, no state change) rather
+than looping — see `runs/` for a real example.
+
+`deepseek-v4-flash` is a reasoning model — hidden reasoning scales with how much there is on
+the page to reason about (~2.5k tokens on a small page, more on a GA4-sized one), so
+`MAX_DECISION_TOKENS` is set to 24k in `loop.py`. Decisions take ~2–7s each.
 
 The Manifest free plan caps `/manifest` calls per month (50 at time of writing); each step
 uses one. A 429 aborts the run cleanly as `error`.

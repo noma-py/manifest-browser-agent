@@ -88,9 +88,10 @@ def _action_view(a: Action, completed: set[str]) -> dict:
 
 
 class AgentLoop:
-    def __init__(self, config: Config, max_steps: int = 15):
+    def __init__(self, config: Config, max_steps: int = 15, demo_pace: float = 0.0):
         self.cfg = config
         self.max_steps = max_steps
+        self.demo_pace = demo_pace
         self.manifest = ManifestClient(api_key=config.manifest_api_key, timeout=MANIFEST_TIMEOUT_S)
         self.llm = openai.OpenAI(api_key=config.deepseek_api_key, base_url=DEEPSEEK_BASE_URL)
 
@@ -253,6 +254,8 @@ class AgentLoop:
                     traj.add(rec)
 
                     last_action_id, last_key = action_id, key
+                    if self.demo_pace:
+                        time.sleep(self.demo_pace)
 
                 traj.finalize("budget_exhausted")
                 return traj

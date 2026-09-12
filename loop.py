@@ -32,6 +32,9 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # more actions still exhausts it, the fix is trimming the actions payload, not
 # raising this forever.
 MAX_DECISION_TOKENS = 24_000
+# a UI can offer a dozen always-blocked actions; the model varying its guess each
+# step defeats the same-action stuck check while making zero real progress.
+NO_PROGRESS_LIMIT = 5
 
 _CLICK_TYPES = {"click", "submit", "button", "link", "check", "radio", "toggle"}
 _FILL_TYPES = {"fill", "text", "input", "textarea", "email", "password",
@@ -176,6 +179,17 @@ class AgentLoop:
         target.click(timeout=ACTION_TIMEOUT_MS)
         page.get_by_role("option", name=value).first.click(timeout=ACTION_TIMEOUT_MS)
 
+    def _click_with_escape_retry(self, page, target) -> None:
+        try:
+            target.click(timeout=ACTION_TIMEOUT_MS)
+        except PlaywrightError as e:
+            if "intercepts pointer events" not in str(e):
+                raise
+            # a stuck overlay/backdrop is blocking the click; CDK-style overlays
+            # (mat-dialog, cdk-overlay) close on Escape by default - try once.
+            page.keyboard.press("Escape")
+            target.click(timeout=ACTION_TIMEOUT_MS)
+
     def _execute(self, page, action: Action, value: str | None) -> str:
         target = self._locator(page, action)
         kind = _action_kind(action.type, value is not None)
@@ -190,7 +204,7 @@ class AgentLoop:
             if kind == "select":
                 self._select(page, action, target, value)
                 return f"selected {value!r} in {action.label!r}"
-            target.click(timeout=ACTION_TIMEOUT_MS)
+            self._click_with_escape_retry(page, target)
             return f"clicked {action.label!r}"
         except ActionExecutionError:
             raise
@@ -204,6 +218,7 @@ class AgentLoop:
         last_action_id: str | None = None
         last_key: tuple[str, str | None] | None = None  # (url_before, manifest fingerprint)
         no_actions_streak = 0
+        no_progress_streak = 0
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=not self.headed)
@@ -285,14 +300,25 @@ class AgentLoop:
                     if action is None:
                         rec.error = f"model chose unknown action_id {action_id!r}"
                         _log(f"[step {step}] ✗ {rec.error}")
+                        no_progress_streak += 1
                     else:
                         try:
                             rec.executed = self._execute(page, action, decision.get("value"))
                             completed.add(action.id)
                             _log(f"[step {step}] ✓ {rec.executed}")
+                            no_progress_streak = 0
                         except ActionExecutionError as e:
                             rec.error = str(e)
                             _log(f"[step {step}] ✗ {rec.error}")
+                            no_progress_streak += 1
+
+                    if no_progress_streak >= NO_PROGRESS_LIMIT:
+                        _log(f"[step {step}] ✗ stuck — no action has succeeded in "
+                             f"{NO_PROGRESS_LIMIT} steps")
+                        traj.add(rec)
+                        raise AgentStuckError(
+                            f"no action succeeded in the last {NO_PROGRESS_LIMIT} steps"
+                        )
 
                     try:
                         page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS)

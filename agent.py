@@ -20,6 +20,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--storage-state", default=None, help="path to a Playwright storage_state.json")
     p.add_argument("--demo-pace", type=float, default=0.0,
                     help="seconds to pause after each step, for recording (default 0 = off)")
+    p.add_argument("--headed", action="store_true",
+                    help="show the browser window, for recording (default: headless)")
     args = p.parse_args(argv)
 
     try:
@@ -28,9 +30,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    traj = AgentLoop(cfg, max_steps=args.max_steps, demo_pace=args.demo_pace).run(
-        args.goal, args.start_url
-    )
+    traj = AgentLoop(
+        cfg, max_steps=args.max_steps, demo_pace=args.demo_pace, headed=args.headed
+    ).run(args.goal, args.start_url)
     jp, mp = traj.write()
 
     print("\n" + "=" * 60)

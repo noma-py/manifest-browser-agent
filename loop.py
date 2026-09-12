@@ -60,6 +60,10 @@ def _iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def _log(msg: str) -> None:
+    print(msg, flush=True)
+
+
 def _strip_fences(text: str) -> str:
     t = text.strip()
     if t.startswith("```"):
@@ -98,10 +102,11 @@ def _action_view(a: Action, completed: set[str]) -> dict:
 
 
 class AgentLoop:
-    def __init__(self, config: Config, max_steps: int = 15, demo_pace: float = 0.0):
+    def __init__(self, config: Config, max_steps: int = 15, demo_pace: float = 0.0, headed: bool = False):
         self.cfg = config
         self.max_steps = max_steps
         self.demo_pace = demo_pace
+        self.headed = headed
         self.manifest = ManifestClient(api_key=config.manifest_api_key, timeout=MANIFEST_TIMEOUT_S)
         self.llm = openai.OpenAI(api_key=config.deepseek_api_key, base_url=DEEPSEEK_BASE_URL)
 
@@ -201,9 +206,9 @@ class AgentLoop:
         no_actions_streak = 0
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(headless=not self.headed)
             ctx_kw = {"storage_state": self.cfg.storage_state} if self.cfg.storage_state else {}
-            context = browser.new_context(**ctx_kw)
+            context = browser.new_context(viewport={"width": 1280, "height": 800}, **ctx_kw)
             page = context.new_page()
             page.goto(start_url, wait_until="domcontentloaded")
             try:
@@ -215,10 +220,12 @@ class AgentLoop:
                 for step in range(self.max_steps):
                     url_before = page.url
                     rec = StepRecord(step=step, url_before=url_before, actions_available=[])
+                    _log(f"[step {step}] perceiving {url_before} ...")
 
                     try:
                         manifest, rec.manifest_call = self._fetch_manifest(page, url_before)
                     except ManifestUnavailableError as e:
+                        _log(f"[step {step}] ✗ {e}")
                         rec.error = str(e)
                         traj.add(rec)
                         traj.finalize("error", str(e))
@@ -231,6 +238,7 @@ class AgentLoop:
                     if not manifest.actions:
                         no_actions_streak += 1
                         rec.error = f"{NoActionsAvailableError.__name__}: manifest returned zero actions"
+                        _log(f"[step {step}] ✗ {rec.error}")
                         traj.add(rec)
                         if no_actions_streak >= 2:
                             raise AgentStuckError("no actions available for 2 consecutive steps")
@@ -247,23 +255,27 @@ class AgentLoop:
                         decision, rec.decision_call = self._decide(goal, actions_view, traj)
                     except (ValueError, openai.APIError) as e:  # bad/empty JSON, API failure
                         rec.error = f"decision step failed: {e}"
+                        _log(f"[step {step}] ✗ {rec.error}")
                         traj.add(rec)
                         traj.finalize("error", rec.error)
                         return traj
                     rec.decision = decision
 
                     if decision.get("done"):
+                        _log(f"[step {step}] ✓ done — {decision.get('reasoning', '')}")
                         traj.add(rec)
                         traj.finalize("complete")
                         return traj
 
                     action_id = decision.get("action_id")
+                    _log(f"[step {step}] → {action_id!r}: {decision.get('reasoning', '')}")
 
                     if (
                         action_id is not None
                         and action_id == last_action_id
                         and key == last_key
                     ):
+                        _log(f"[step {step}] ✗ stuck — {action_id!r} chosen again, no state change")
                         traj.add(rec)
                         raise AgentStuckError(
                             f"action {action_id!r} chosen again with no url/state change"
@@ -272,12 +284,15 @@ class AgentLoop:
                     action = manifest.action(action_id) if action_id else None
                     if action is None:
                         rec.error = f"model chose unknown action_id {action_id!r}"
+                        _log(f"[step {step}] ✗ {rec.error}")
                     else:
                         try:
                             rec.executed = self._execute(page, action, decision.get("value"))
                             completed.add(action.id)
+                            _log(f"[step {step}] ✓ {rec.executed}")
                         except ActionExecutionError as e:
                             rec.error = str(e)
+                            _log(f"[step {step}] ✗ {rec.error}")
 
                     try:
                         page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS)

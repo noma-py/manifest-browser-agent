@@ -118,14 +118,24 @@ class AgentLoop:
     # re-navigation of the URL. That means auth and any client-side-only state
     # (an open picker/overlay/modal that never touched the URL) are both visible,
     # since we're reading the DOM our own browser is actually looking at right now.
-    def _fetch_manifest(self, page, url: str) -> tuple[Manifest, CallTiming]:
+    def _fetch_manifest(
+        self, page, url: str, previous_manifest: Manifest | None, last_action_id: str | None
+    ) -> tuple[Manifest, CallTiming]:
         started, t0 = _iso(), time.monotonic()
         try:
             page.evaluate(EXTRACTOR_JS)
             dom_context = page.evaluate("window.__semanticAgentLayerExtractDomContext()")
             # no cache_scope: a wizard/funnel's DOM changes every step, so caching
             # would risk serving a stale overlay back on the next perceive.
-            m = self.manifest.get_from_dom(url, dom_context)
+            # previous_manifest/last_action_id let Manifest flag actions whose target
+            # silently rebinds to a different widget after that action (rebinds_on) -
+            # the exact failure mode behind the GA4 funnel step-naming bug.
+            m = self.manifest.get_from_dom(
+                url,
+                dom_context,
+                previous_manifest=previous_manifest.to_dict() if previous_manifest else None,
+                last_action_id=last_action_id,
+            )
         except RateLimitError as e:
             # Manifest's 429 covers both a per-minute burst and a hard plan quota
             # ("Monthly manifest limit reached"). Neither is worth retrying here.
@@ -217,6 +227,7 @@ class AgentLoop:
         completed: set[str] = set()
         last_action_id: str | None = None
         last_key: tuple[str, str | None] | None = None  # (url_before, manifest fingerprint)
+        last_manifest: Manifest | None = None
         no_actions_streak = 0
         no_progress_streak = 0
 
@@ -238,7 +249,9 @@ class AgentLoop:
                     _log(f"[step {step}] perceiving {url_before} ...")
 
                     try:
-                        manifest, rec.manifest_call = self._fetch_manifest(page, url_before)
+                        manifest, rec.manifest_call = self._fetch_manifest(
+                            page, url_before, last_manifest, last_action_id
+                        )
                     except ManifestUnavailableError as e:
                         _log(f"[step {step}] ✗ {e}")
                         rec.error = str(e)
@@ -297,8 +310,23 @@ class AgentLoop:
                         )
 
                     action = manifest.action(action_id) if action_id else None
+                    # stale_targets() raises if last_action_id isn't one of THIS manifest's
+                    # actions - routine once the DOM re-renders past it, so treat that as
+                    # "nothing to judge staleness against" rather than a real error.
+                    stale_ids = (
+                        {a.id for a in manifest.stale_targets(last_action_id)}
+                        if last_action_id is None or manifest.action(last_action_id) is not None
+                        else set()
+                    )
                     if action is None:
                         rec.error = f"model chose unknown action_id {action_id!r}"
+                        _log(f"[step {step}] ✗ {rec.error}")
+                        no_progress_streak += 1
+                    elif action.id in stale_ids:
+                        # a shared/singleton widget (rebinds_on) is still bound to whatever
+                        # last_action_id opened - filling it now would silently overwrite the
+                        # same target again, as happened with GA4's funnel step-name box.
+                        rec.error = f"{action.id!r} rebinds on {last_action_id!r} - target is stale, skipping"
                         _log(f"[step {step}] ✗ {rec.error}")
                         no_progress_streak += 1
                     else:
@@ -327,7 +355,7 @@ class AgentLoop:
                     rec.url_after = page.url
                     traj.add(rec)
 
-                    last_action_id, last_key = action_id, key
+                    last_action_id, last_key, last_manifest = action_id, key, manifest
                     if self.demo_pace:
                         time.sleep(self.demo_pace)
 
